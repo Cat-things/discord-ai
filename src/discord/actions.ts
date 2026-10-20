@@ -66,6 +66,10 @@ export const actionSchemas = {
     channel: id,
     content: text.optional(),
     embed: embed.optional(),
+    /** Link buttons under the message (https only, max 5). */
+    buttons: z.array(z.object({ label: text, url: z.string() })).optional(),
+    /** "everyone", "here" or a role. Pinging always needs approval. */
+    ping: z.string().optional(),
     pin: bool.optional(),
   }),
   create_automod_rule: z.object({
@@ -153,6 +157,16 @@ export const actionSchemas = {
     ...permissionShortcuts,
   }),
   delete_channel: z.object({ channel: id, delete_children: bool.optional() }),
+  move_message: z.object({ message: id, to_channel: id, keep_original: bool.optional() }),
+  move_messages: z.object({
+    from_channel: id,
+    to_channel: id,
+    count: num.optional(),
+    author: id.optional(),
+    keep_original: bool.optional(),
+  }),
+  edit_message: z.object({ message: id, content: text.optional(), embed: embed.optional() }),
+  delete_message: z.object({ message: id }),
   edit_role: z.object({
     role: id,
     name: text.optional(),
@@ -240,6 +254,10 @@ export type Action = { [T in ActionType]: ActionOf<T> }[ActionType];
 export const DESTRUCTIVE_TYPES: ReadonlySet<ActionType> = new Set<ActionType>([
   'edit_channel',
   'delete_channel',
+  'move_message',
+  'move_messages',
+  'edit_message',
+  'delete_message',
   'edit_role',
   'delete_role',
   'set_permissions',
@@ -308,6 +326,23 @@ const typeAliases: Record<string, string> = {
   edit_permissions: 'set_permissions',
   channel_permissions: 'set_permissions',
   set_nickname: 'set_bot_profile',
+  move_panel: 'move_message',
+  move_post: 'move_message',
+  repost_message: 'move_message',
+  copy_message: 'move_message',
+  copy_messages: 'move_messages',
+  move_chat: 'move_messages',
+  move_history: 'move_messages',
+  move_recent_messages: 'move_messages',
+  move_conversation: 'move_messages',
+  bulk_move_messages: 'move_messages',
+  update_message: 'edit_message',
+  edit_post: 'edit_message',
+  remove_message: 'delete_message',
+  delete_post: 'delete_message',
+  announce: 'send_message',
+  send_announcement: 'send_message',
+  post_announcement: 'send_message',
 };
 
 export interface InvalidAction {
@@ -349,6 +384,7 @@ export function normalizeActions(raw: unknown[]): { actions: Action[]; invalid: 
     const shorthand = /^create_(text|voice|forum|announcement|stage)_channel$/.exec(type);
     if (shorthand) channelType ??= shorthand[1];
     const removing = type === 'remove_role';
+    const copying = type === 'copy_message' || type === 'copy_messages';
     if (Object.hasOwn(typeAliases, type)) type = typeAliases[type];
     if (type === 'create_channel' && norm(channelType) === 'category') type = 'create_category';
 
@@ -361,6 +397,7 @@ export function normalizeActions(raw: unknown[]): { actions: Action[]; invalid: 
     for (const k of ['type', 'action', 'tool', 'op', 'kind']) delete fields[k];
     if (type === 'create_channel') fields.channel_type = channelType;
     if (removing) fields.remove = true;
+    if (copying) fields.keep_original = true;
 
     const parsed = schema.safeParse(fields);
     if (!parsed.success) {
@@ -402,6 +439,10 @@ const phase: Record<ActionType, number> = {
   edit_automod_rule: 6,
   edit_server: 7,
   set_bot_profile: 7,
+  move_message: 7,
+  move_messages: 7,
+  edit_message: 7,
+  delete_message: 7,
   setup_onboarding: 8,
   recommend_bots: 9,
 };

@@ -43,6 +43,15 @@ export interface HistoryEntry {
   changed: string[];
 }
 
+/** Messages the bot posted (panels, announcements...), so the AI can move/edit/delete them later. */
+export interface BotPost {
+  id: string;
+  channelId: string;
+  kind: 'message' | 'verification' | 'tickets' | 'role_menu';
+  title: string;
+  at: string;
+}
+
 export interface GuildSettings {
   provider?: ProviderSettings;
   autoMode?: { enabled: boolean; by?: string; at?: string };
@@ -51,6 +60,7 @@ export interface GuildSettings {
   autorole?: { roleIds: string[]; botRoleIds: string[] };
   tickets?: TicketSettings;
   history?: HistoryEntry[];
+  posts?: BotPost[];
 }
 
 interface Schema {

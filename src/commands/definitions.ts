@@ -1,4 +1,4 @@
-import { InteractionContextType, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+import { ApplicationCommandType, ContextMenuCommandBuilder, InteractionContextType, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 import { providerChoices } from '../ai/providers';
 
 const adminOnly = (b: SlashCommandBuilder) =>
@@ -36,4 +36,11 @@ export const commandDefinitions = [
   ),
 
   adminOnly(new SlashCommandBuilder().setName('help').setDescription('How to use this bot')),
+
+  // Right-click a message → Apps → Move message
+  new ContextMenuCommandBuilder()
+    .setName('Move message')
+    .setType(ApplicationCommandType.Message)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .setContexts(InteractionContextType.Guild),
 ];

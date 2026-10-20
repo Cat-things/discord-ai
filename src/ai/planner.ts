@@ -34,6 +34,7 @@ RULES
 - Only staff roles get moderation permissions. Never grant Administrator unless the admin explicitly asks.
 - Announcement and stage channels, server description, and Onboarding need Community mode (check server.community_enabled; add enable_community first when needed).
 - The bot can't manage roles marked above_bot or managed_by_integration.
+- bot_messages lists messages/panels the bot posted earlier; use their id or title with move_message/edit_message/delete_message. To relocate a panel (verification, tickets, role menu) use move_message, never post a duplicate panel.
 - Write real, finished content (rules, welcome text, info) in the server's language. No placeholders like "[insert]".
 - Use at most ${config.maxActionsPerPlan} steps.
 
@@ -43,7 +44,8 @@ create_category {key?, name, private?, read_only?, allowed_roles?: [role], permi
 create_channel {key?, name, channel_type?: text|voice|announcement|forum|stage, category?, topic?, nsfw?, slowmode? (seconds), user_limit?, tags? (forum tags), private?, read_only?, allowed_roles?, permissions?: [overwrite]}
   overwrite = {target: role name|"@everyone", allow?: [perm], deny?: [perm]}
   private:true hides it from @everyone (allowed_roles still see it). read_only:true means everyone reads but only allowed_roles can post.
-send_message {channel, content?, embed?: {title?, description?, color?, fields?: [{name, value, inline?}], footer?}, pin?}
+send_message {channel, content?, embed?: {title?, description?, color?, fields?: [{name, value, inline?}], footer?}, buttons?: [{label, url}] (https links), ping?: everyone|here|role name (ONLY if the admin asked for a ping), pin?}
+  Post messages whenever the admin wants something said, announced or explained, in build AND modify mode (e.g. announce new channels, post rules, a "server updated" note).
 create_automod_rule {name, trigger: keyword|keyword_preset|spam|mention_spam, keywords?: [word], presets?: [profanity|sexual_content|slurs], mention_limit?, actions?: [{type: block|alert|timeout, channel? (alert channel), duration_seconds? (timeout), message? (block reason)}], exempt_roles?, exempt_channels?}
 setup_welcome {channel, message, embed?, title?, color?, dm_message?}  (placeholders: {user} {username} {server} {membercount})
 setup_goodbye {channel, message, embed?}
@@ -56,6 +58,10 @@ set_bot_profile {nickname?, bio?}
 -- destructive (they change or remove existing things) --
 edit_channel {channel, name?, topic?, category? (null = no category), nsfw?, slowmode?, user_limit?, position?, private?, read_only?, allowed_roles?, permissions?, sync_permissions?}  (also works on categories)
 delete_channel {channel, delete_children?}  (also deletes categories)
+move_message {message, to_channel, keep_original?}  (message = id or title from bot_messages, a message link the admin gave, or verification|tickets|role_menu for the bot's panels; reposts it there, buttons keep working, then deletes the original. keep_original:true copies instead)
+move_messages {from_channel, to_channel, count? (1-100, newest first, default 10), author? (user id/name), keep_original?}  (moves recent chat, keeping each author's name and avatar)
+edit_message {message, content?, embed?}  (only messages the bot posted)
+delete_message {message}
 edit_role {role, name?, color?, hoist?, mentionable?, permissions? (replaces all), add_permissions?, remove_permissions?, position?}
 delete_role {role}
 set_permissions {channel, target: role|"@everyone"|user id, allow?: [perm], deny?: [perm], clear?}
@@ -83,7 +89,7 @@ EXAMPLE
 function userPrompt(guild: Guild, mode: PlanMode, prompt: string, focus: string | undefined, local: boolean): string {
   const intent =
     mode === 'modify'
-      ? 'MODE: modify. The admin wants to change existing things (including things you built earlier, see recent_changes_by_you). Use edit_/delete_/set_permissions actions; only create new things when the change needs them.'
+      ? 'MODE: modify. The admin wants to change existing things (including things you built earlier, see recent_changes_by_you). Use edit_/delete_/move_/set_permissions actions; only create new things when the change needs them. You can also send_message to post or announce things.'
       : 'MODE: build. Build or extend the server on top of what exists. Prefer adding; reuse what fits; do not delete or edit unless asked.';
   let snapshot = JSON.stringify(buildSnapshot(guild));
   // Small local models have small context windows; drop permission details on big servers.

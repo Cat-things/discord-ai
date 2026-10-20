@@ -14,6 +14,7 @@ import {
   GuildBasedChannel,
   GuildChannel,
   GuildDefaultMessageNotifications,
+  GuildTextBasedChannel,
   GuildExplicitContentFilter,
   GuildMember,
   GuildOnboardingMode,
@@ -33,7 +34,9 @@ import { config } from '../config';
 import { log } from '../logger';
 import { updateGuild } from '../storage/db';
 import { Action, ActionOf, ActionType, DESTRUCTIVE_TYPES } from './actions';
+import { Refused } from './errors';
 import { BOT_CATALOG, botInviteUrl, findCatalogBot, lookupApplication } from './bots';
+import { isMessageTarget, moveMessage, moveRecentMessages, resolveMessage, sourceChannelOf, titleOf, trackPost, untrackPost } from './messages';
 import { isDangerous, resolvePermissions } from './permissions';
 import { fetchImage, newKeys, PlanKeys, resolveChannel, resolveColor, resolveRole } from './resolve';
 
@@ -66,7 +69,6 @@ interface Ctx {
   result: ExecResult;
 }
 
-class Refused extends Error {}
 
 /* ------------------------------------------------------------------------------------------------ */
 /* Destructive classification                                                                       */
@@ -92,6 +94,8 @@ export function isActionDestructive(a: Action, planned: Set<string>): boolean {
   switch (a.type) {
     case 'create_role':
       return isDangerous(resolvePermissions(a.permissions).bits);
+    case 'send_message':
+      return !!a.ping;
     case 'edit_channel':
     case 'set_permissions':
       return !own(a.channel);
@@ -419,10 +423,33 @@ const handlers: Handlers = {
   async send_message(ctx, a) {
     if (!a.content && !a.embed) throw new Refused('Message has no content.');
     const channel = needChannel(ctx, a.channel, 'notCategory');
+
+    // Pings only happen when the plan explicitly asks (and that step always needs approval).
+    let ping = '';
+    let allowedMentions: { parse: ('everyone' | 'roles' | 'users')[]; roles?: string[] } = { parse: [] };
+    if (a.ping) {
+      const target = a.ping.trim().replace(/^@/, '').toLowerCase();
+      if (target === 'everyone' || target === 'here') {
+        ping = `@${target}`;
+        allowedMentions = { parse: ['everyone'] };
+      } else {
+        const role = resolveRole(ctx.guild, ctx.keys, a.ping);
+        if (!role) throw new Refused(`Role "${a.ping}" to ping not found.`);
+        ping = role.id === ctx.guild.id ? '@everyone' : `<@&${role.id}>`;
+        allowedMentions = role.id === ctx.guild.id ? { parse: ['everyone'] } : { parse: [], roles: [role.id] };
+      }
+    }
+    const buttons = (a.buttons ?? [])
+      .filter((b) => /^https:\/\//.test(b.url))
+      .slice(0, 5)
+      .map((b) => new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(b.url).setLabel(truncate(b.label, 80) || 'Open'));
+    if ((a.buttons?.length ?? 0) > buttons.length) ctx.result.warnings.push('Some message buttons were skipped (only https links, max 5).');
+    const content = [ping, a.content].filter(Boolean).join(' ');
     const payload = {
-      content: truncate(a.content, 2000),
+      content: truncate(content || undefined, 2000),
       embeds: a.embed ? [buildEmbed(a.embed)] : [],
-      allowedMentions: { parse: [] as never[] },
+      components: buttons.length ? [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)] : [],
+      allowedMentions,
     };
     if (channel.type === ChannelType.GuildForum) {
       const thread = await channel.threads.create({ name: truncate(a.embed?.title ?? a.content ?? 'Welcome', 100)!, message: payload });
@@ -430,8 +457,9 @@ const handlers: Handlers = {
     }
     if (!channel.isTextBased() || !('send' in channel)) throw new Refused(`#${channel.name} can't receive messages.`);
     const msg = await channel.send(payload);
+    trackPost(ctx.guild.id, { id: msg.id, channelId: channel.id, kind: 'message', title: titleOf({ content: a.content, embeds: [{ title: a.embed?.title }] }) });
     if (a.pin) await msg.pin().catch((err) => ctx.result.warnings.push(`Couldn't pin in #${channel.name}: ${explainError(err)}`));
-    return `Posted a message in #${channel.name}`;
+    return `Posted a message in #${channel.name}${ping ? ` (pinged ${ping.startsWith('<') ? 'a role' : ping})` : ''}`;
   },
 
   async create_automod_rule(ctx, a) {
@@ -602,13 +630,15 @@ const handlers: Handlers = {
       });
       return rows;
     };
+    let sent;
     try {
-      await ch.send({ embeds: [embed], components: build(true), allowedMentions: { parse: [] } });
+      sent = await ch.send({ embeds: [embed], components: build(true), allowedMentions: { parse: [] } });
     } catch (err) {
       if (!(err instanceof DiscordAPIError) || err.code !== 50035) throw err;
-      await ch.send({ embeds: [embed], components: build(false), allowedMentions: { parse: [] } });
+      sent = await ch.send({ embeds: [embed], components: build(false), allowedMentions: { parse: [] } });
       ctx.result.warnings.push('Role menu: some emojis were invalid, posted without emojis.');
     }
+    trackPost(ctx.guild.id, { id: sent.id, channelId: ch.id, kind: 'role_menu', title: a.title });
     return `Posted a role menu with ${entries.length} role(s) in #${ch.name}`;
   },
 
@@ -625,7 +655,8 @@ const handlers: Handlers = {
       .setLabel(truncate(a.button_label, 80) ?? 'Verify')
       .setStyle(ButtonStyle.Success)
       .setEmoji('✅');
-    await ch.send({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)] });
+    const sent = await ch.send({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)] });
+    trackPost(ctx.guild.id, { id: sent.id, channelId: ch.id, kind: 'verification', title: a.title ?? 'Verification' });
     return `Posted a verification button in #${ch.name} (gives @${role.name})`;
   },
 
@@ -652,7 +683,8 @@ const handlers: Handlers = {
       .setLabel(truncate(a.button_label, 80) ?? 'Open a ticket')
       .setStyle(ButtonStyle.Primary)
       .setEmoji('🎫');
-    await ch.send({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)] });
+    const sent = await ch.send({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)] });
+    trackPost(ctx.guild.id, { id: sent.id, channelId: ch.id, kind: 'tickets', title: a.title ?? 'Support tickets' });
     ctx.result.changed.push('ticket system');
     return `Posted a ticket panel in #${ch.name}`;
   },
@@ -683,6 +715,56 @@ const handlers: Handlers = {
     if (a.bio !== undefined) edit.bio = truncate(a.bio, 190);
     await ctx.guild.members.editMe(edit);
     return `Updated my server profile`;
+  },
+
+  async move_message(ctx, a) {
+    const target = needChannel(ctx, a.to_channel, 'notCategory');
+    if (!isMessageTarget(target)) throw new Refused(`I can't move messages into #${target.name} (use a text, announcement or voice channel).`);
+    const msg = await resolveMessage(ctx.guild, a.message);
+    const from = msg.channel && 'name' in msg.channel ? msg.channel.name : 'its channel';
+    const r = await moveMessage(ctx.guild, msg, target, { keepOriginal: a.keep_original });
+    if (r.note) ctx.result.warnings.push(`Move "${titleOf(msg)}": ${r.note}`);
+    ctx.result.changed.push(`moved message to #${target.name}`);
+    return `${a.keep_original ? 'Copied' : 'Moved'} "${truncate(titleOf(msg), 60)}" from #${from} to #${target.name}`;
+  },
+
+  async move_messages(ctx, a) {
+    const source = needChannel(ctx, a.from_channel, 'notCategory');
+    const target = needChannel(ctx, a.to_channel, 'notCategory');
+    if (!source.isTextBased()) throw new Refused(`#${source.name} has no messages to move.`);
+    if (!isMessageTarget(target)) throw new Refused(`I can't move messages into #${target.name}.`);
+    let authorId: string | undefined;
+    if (a.author) {
+      const raw = a.author.replace(/[<@!>]/g, '');
+      authorId = /^\d{17,20}$/.test(raw)
+        ? raw
+        : (await ctx.guild.members.fetch({ query: a.author.replace(/^@/, ''), limit: 1 }).catch(() => undefined))?.first()?.id;
+      if (!authorId) throw new Refused(`Member "${a.author}" not found.`);
+    }
+    const r = await moveRecentMessages(ctx.guild, source as GuildTextBasedChannel, target, a.count ?? 10, { authorId, keepOriginal: a.keep_original });
+    for (const note of r.notes.slice(0, 5)) ctx.result.warnings.push(`Moving from #${source.name}: ${note}`);
+    ctx.result.changed.push(`moved messages #${source.name} → #${target.name}`);
+    return `${a.keep_original ? 'Copied' : 'Moved'} ${r.moved} message(s) from #${source.name} to #${target.name}${r.failed ? ` (${r.failed} failed)` : ''}`;
+  },
+
+  async edit_message(ctx, a) {
+    if (a.content === undefined && !a.embed) throw new Refused('Nothing to change in the message.');
+    const msg = await resolveMessage(ctx.guild, a.message);
+    if (msg.author.id !== ctx.guild.client.user.id || msg.webhookId) throw new Refused('I can only edit messages I posted myself.');
+    const edit: Record<string, unknown> = { allowedMentions: { parse: [] } };
+    if (a.content !== undefined) edit.content = truncate(a.content, 2000) || null;
+    if (a.embed) edit.embeds = [buildEmbed(a.embed)];
+    await msg.edit(edit);
+    ctx.result.changed.push(`edited message "${titleOf(msg)}"`);
+    return `Edited "${truncate(titleOf(msg), 60)}"`;
+  },
+
+  async delete_message(ctx, a) {
+    const msg = await resolveMessage(ctx.guild, a.message);
+    await msg.delete();
+    untrackPost(ctx.guild.id, msg.id);
+    ctx.result.changed.push(`deleted message "${titleOf(msg)}"`);
+    return `Deleted "${truncate(titleOf(msg), 60)}"`;
   },
 
   async edit_channel(ctx, a) {
@@ -993,6 +1075,32 @@ export interface ExecOptions {
   onProgress?: (done: number, total: number, last: ResultLine) => void;
 }
 
+/**
+ * Deletes normally run first (to free names), but never before messages are moved out of that channel:
+ * those deletes are pushed to the very end of the plan.
+ */
+function deferRiskyDeletes(ctx: Ctx, actions: Action[]): Action[] {
+  const sources = new Set<string>();
+  for (const a of actions) {
+    if (a.type === 'move_message') {
+      const id = sourceChannelOf(ctx.guild, a.message);
+      if (id) sources.add(id);
+    } else if (a.type === 'move_messages') {
+      const ch = resolveChannel(ctx.guild, ctx.keys, a.from_channel, 'notCategory');
+      if (ch) sources.add(ch.id);
+    }
+  }
+  if (!sources.size) return actions;
+  const risky = (a: Action) => {
+    if (a.type !== 'delete_channel') return false;
+    const ch = resolveChannel(ctx.guild, ctx.keys, a.channel);
+    if (!ch) return false;
+    if (sources.has(ch.id)) return true;
+    return ch.type === ChannelType.GuildCategory && [...sources].some((id) => ctx.guild.channels.cache.get(id)?.parentId === ch.id);
+  };
+  return [...actions.filter((a) => !risky(a)), ...actions.filter(risky)];
+}
+
 export async function executePlan(opts: ExecOptions): Promise<ExecResult> {
   const me = opts.guild.members.me ?? (await opts.guild.members.fetchMe());
   const ctx: Ctx = {
@@ -1003,7 +1111,7 @@ export async function executePlan(opts: ExecOptions): Promise<ExecResult> {
     result: { lines: [], created: [], changed: [], links: [], warnings: [] },
   };
   const planned = plannedNames(opts.guild, opts.actions);
-  const actions = opts.actions.slice(0, config.maxActionsPerPlan);
+  const actions = deferRiskyDeletes(ctx, opts.actions.slice(0, config.maxActionsPerPlan));
   if (opts.actions.length > actions.length) ctx.result.warnings.push(`Plan had ${opts.actions.length} steps; only the first ${actions.length} ran (MAX_ACTIONS_PER_PLAN).`);
 
   for (const [i, action] of actions.entries()) {
@@ -1035,7 +1143,15 @@ export function describeAction(a: Action): string {
     case 'create_channel':
       return `${['voice', 'vc', 'stage'].includes(a.channel_type ?? '') ? '🔊' : '#️⃣'} Create ${a.channel_type ?? 'text'} channel ${a.name}${a.category ? ` in ${a.category}` : ''}${a.private ? ' (private)' : ''}${a.read_only ? ' (read-only)' : ''}`;
     case 'send_message':
-      return `💬 Post a message in ${a.channel}`;
+      return `💬 Post a message in ${a.channel}${a.ping ? ` (pings ${a.ping})` : ''}`;
+    case 'move_message':
+      return `📦 ${a.keep_original ? 'Copy' : 'Move'} message "${a.message}" → ${a.to_channel}`;
+    case 'move_messages':
+      return `📦 ${a.keep_original ? 'Copy' : 'Move'} last ${a.count ?? 10} message(s) ${a.from_channel} → ${a.to_channel}${a.author ? ` (from ${a.author})` : ''}`;
+    case 'edit_message':
+      return `✏️ Edit message "${a.message}"`;
+    case 'delete_message':
+      return `🗑️ Delete message "${a.message}"`;
     case 'create_automod_rule':
       return `🛡️ AutoMod rule "${a.name}" (${a.trigger})`;
     case 'setup_welcome':

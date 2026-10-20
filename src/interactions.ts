@@ -1,6 +1,7 @@
 import { Interaction, PermissionFlagsBits, RepliableInteraction } from 'discord.js';
 import { askCommand, askModalSubmit, botsButton, botsModalSubmit, botsSelect, menuSelect } from './commands/ask';
 import { autoCommand, helpCommand, modifyCommand } from './commands/misc';
+import { moveContextMenu, moveSelect } from './commands/move';
 import { providerAutocomplete, providerCommand, providerModalSubmit } from './commands/provider';
 import { handlePlanButton } from './discord/build';
 import { roleButton, roleSelect, ticketButton, verifyButton } from './discord/features';
@@ -44,6 +45,12 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
       return;
     }
 
+    if (interaction.isMessageContextMenuCommand()) {
+      if (!(await requireAdmin(interaction))) return;
+      if (interaction.commandName === 'Move message') await moveContextMenu(interaction);
+      return;
+    }
+
     const id = interaction.isMessageComponent() || interaction.isModalSubmit() ? interaction.customId : '';
     if (!id.startsWith('gs:')) return;
 
@@ -61,6 +68,7 @@ export async function handleInteraction(interaction: Interaction): Promise<void>
       if (id.startsWith('gs:plan:')) return await handlePlanButton(interaction);
       if (id.startsWith('gs:bots:')) return await botsButton(interaction);
     }
+    if (interaction.isChannelSelectMenu() && id.startsWith('gs:move:')) return await moveSelect(interaction);
     if (interaction.isStringSelectMenu()) {
       if (id === 'gs:menu' || id === 'gs:template') return await menuSelect(interaction);
       if (id === 'gs:bots:pick') return await botsSelect(interaction);

@@ -12,6 +12,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
 } from 'discord.js';
+import { PlanMode } from '../ai/planner';
 import { BOT_CATALOG, botInviteUrl, lookupApplication, parseClientId } from '../discord/bots';
 import { runAiRequest } from '../discord/build';
 import { BotLink } from '../discord/executor';
@@ -25,6 +26,8 @@ interface Feature {
   /** Prefilled text in the modal; the admin can tweak it before sending. */
   defaultPrompt: string;
   focus?: string;
+  /** Moving things is a change to existing stuff, so it plans in modify mode. */
+  mode?: PlanMode;
 }
 
 export const FEATURES: Feature[] = [
@@ -112,6 +115,23 @@ export const FEATURES: Feature[] = [
     description: 'Private support tickets with staff',
     defaultPrompt: 'Create a #support channel with a ticket panel. Staff for tickets: the existing moderator/admin roles (create a Support role if there are none).',
     focus: 'Only build the ticket system: create_ticket_panel plus the channel/roles it needs.',
+  },
+  {
+    id: 'announce',
+    label: 'Post an announcement / message',
+    emoji: '📣',
+    description: 'The AI writes and posts it, pings optional',
+    defaultPrompt: 'Post a nice embed in #announcements telling everyone about the latest server changes and new channels. Do not ping anyone.',
+    focus: 'Only post messages with send_message (create the channel only if it is missing). Only ping if the request asks for it.',
+  },
+  {
+    id: 'move',
+    label: 'Move messages & panels',
+    emoji: '📦',
+    description: 'Relocate verification/ticket/role panels or chat',
+    defaultPrompt: 'Move the verification panel to #verify and the ticket panel to #support (create those channels if they do not exist).',
+    focus: 'Use move_message for single messages and panels, move_messages for recent chat. Create target channels only if missing.',
+    mode: 'modify',
   },
   {
     id: 'rules',
@@ -209,7 +229,7 @@ export async function askModalSubmit(interaction: ModalSubmitInteraction<'cached
       title: '🤖 Bot picks',
     });
   }
-  await runAiRequest(interaction, { mode: 'ask', prompt, focus: feature?.focus, title: feature && feature.id !== 'build' ? `${feature.emoji} ${feature.label}` : undefined });
+  await runAiRequest(interaction, { mode: feature?.mode ?? 'ask', prompt, focus: feature?.focus, title: feature && feature.id !== 'build' ? `${feature.emoji} ${feature.label}` : undefined });
 }
 
 /* ------------------------------------------------------------------------------------------------ */

@@ -148,6 +148,10 @@ export function buildSnapshot(guild: Guild, compact = false): Record<string, unk
         ? { category: channelName(settings.tickets.categoryId), staff_roles: settings.tickets.staffRoleIds.map(roleName) }
         : null,
     },
+    bot_messages: (settings.posts ?? [])
+      .filter((p) => guild.channels.cache.has(p.channelId))
+      .slice(0, compact ? 15 : 30)
+      .map((p) => ({ id: p.id, channel: channelName(p.channelId), kind: p.kind, title: p.title })),
     recent_changes_by_you: (settings.history ?? []).slice(0, 5).map((h) => ({
       when: h.at,
       request: h.prompt.slice(0, 200),
