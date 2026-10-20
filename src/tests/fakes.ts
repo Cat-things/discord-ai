@@ -3,7 +3,51 @@ import { ChannelType, Collection, PermissionFlagsBits, PermissionsBitField } fro
 /* Minimal fake discord.js objects, just enough for the executor, snapshot and planner. */
 
 let nextId = 100000000000000000n;
-const snowflake = () => String(nextId++);
+export const snowflake = () => String(nextId++);
+
+const asEmbed = (e: any) => {
+  const data = e?.data ?? e;
+  return { data, title: data.title ?? null, toJSON: () => data };
+};
+const asComponent = (c: any) => ({ toJSON: () => (typeof c?.toJSON === 'function' ? c.toJSON() : c) });
+
+/** A message in a fake channel. author defaults to a regular user. */
+export function fakeMessage(channel: any, data: any = {}) {
+  const author = data.author ?? { id: '900000000000000001', username: 'alice', displayName: 'Alice' };
+  author.displayAvatarURL ??= () => `https://cdn.example/avatars/${author.id}.png`;
+  const msg: any = {
+    id: snowflake(),
+    channelId: channel.id,
+    channel,
+    author,
+    member: data.member,
+    webhookId: data.webhookId ?? null,
+    system: !!data.system,
+    content: data.content ?? '',
+    embeds: (data.embeds ?? []).map(asEmbed),
+    components: (data.components ?? []).map(asComponent),
+    attachments: new Collection<string, any>((data.attachments ?? []).map((a: any) => [a.id ?? snowflake(), a])),
+    stickers: new Collection(),
+    poll: null,
+    createdTimestamp: data.createdTimestamp ?? Date.now(),
+    get url() {
+      return `https://discord.com/channels/${channel.guild.id}/${channel.id}/${msg.id}`;
+    },
+    async delete() {
+      if (!channel.messageStore.has(msg.id)) throw new Error('Unknown Message');
+      channel.messageStore.delete(msg.id);
+    },
+    async edit(e: any) {
+      if (e.content !== undefined) msg.content = e.content ?? '';
+      if (e.embeds) msg.embeds = e.embeds.map(asEmbed);
+      msg.lastEdit = e;
+      return msg;
+    },
+    async pin() {},
+  };
+  channel.messageStore.set(msg.id, msg);
+  return msg;
+}
 
 export function fakeRole(guild: any, data: { id?: string; name: string; position: number; permissions?: bigint; managed?: boolean }) {
   const role: any = {
@@ -48,7 +92,54 @@ export function fakeChannel(guild: any, opts: any) {
     },
     topic: opts.topic ?? null,
     position: guild.channels.cache.size,
+    guild,
+    get client() {
+      return guild.client;
+    },
     sent: [] as any[],
+    messageStore: new Collection<string, any>(),
+    webhooks: new Collection<string, any>(),
+    messages: {
+      async fetch(arg: any) {
+        if (typeof arg === 'string') {
+          const found = channel.messageStore.get(arg);
+          if (!found) throw new Error('Unknown Message');
+          return found;
+        }
+        const newestFirst = [...channel.messageStore.values()].reverse().slice(0, arg?.limit ?? 50);
+        return new Collection(newestFirst.map((m: any) => [m.id, m]));
+      },
+    },
+    async fetchWebhooks() {
+      return channel.webhooks;
+    },
+    async createWebhook(opts: any) {
+      const hook: any = {
+        id: snowflake(),
+        name: opts.name,
+        token: 'hook-token',
+        owner: { id: guild.client.user.id },
+        sent: [] as any[],
+        async send(payload: any) {
+          hook.sent.push(payload);
+          return fakeMessage(channel, { ...payload, author: { id: hook.id, username: payload.username }, webhookId: hook.id });
+        },
+      };
+      channel.webhooks.set(hook.id, hook);
+      return hook;
+    },
+    async bulkDelete(ids: string[]) {
+      const removed = new Collection<string, any>();
+      for (const id of ids) {
+        const m = channel.messageStore.get(id);
+        if (m) {
+          channel.messageStore.delete(id);
+          removed.set(id, m);
+        }
+      }
+      channel.bulkDeleted = (channel.bulkDeleted ?? 0) + removed.size;
+      return removed;
+    },
     permissionOverwrites: {
       cache: overwrites,
       async set(list: any[]) {
@@ -79,7 +170,7 @@ export function fakeChannel(guild: any, opts: any) {
     isTextBased: () => [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildVoice].includes(channel.type),
     async send(payload: any) {
       channel.sent.push(payload);
-      return { pin: async () => undefined };
+      return fakeMessage(channel, { ...payload, author: { id: guild.client.user.id, username: 'GuildSmith', displayName: 'GuildSmith' } });
     },
     async delete() {
       guild.channels.cache.delete(channel.id);
@@ -95,7 +186,10 @@ export function fakeChannel(guild: any, opts: any) {
     },
     permissionsFor: () => ({ has: () => true }),
   };
-  if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement && channel.type !== ChannelType.GuildVoice) delete channel.send;
+  if (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement && channel.type !== ChannelType.GuildVoice) {
+    delete channel.send;
+    delete channel.createWebhook;
+  }
   return channel;
 }
 
@@ -109,6 +203,7 @@ export function fakeGuild({ botAdmin }: { botAdmin: boolean }) {
     memberCount: 42,
     edits: [] as any[],
     automod: [] as any[],
+    client: { user: { id: 'bot-user' } },
   };
   const everyone = fakeRole(guild, { id: guild.id, name: '@everyone', position: 0, permissions: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages });
   const roles = new Collection<string, any>([[everyone.id, everyone]]);

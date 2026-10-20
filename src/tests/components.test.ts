@@ -32,7 +32,8 @@ function fakeInteraction(extra: Record<string, unknown> = {}) {
 test('slash command definitions are valid for Discord', async () => {
   const { commandDefinitions } = await import('../commands/definitions');
   const body = commandDefinitions.map((c) => c.toJSON());
-  assert.deepEqual(body.map((c) => c.name), ['provider', 'ask', 'modify', 'auto', 'help']);
+  assert.deepEqual(body.map((c) => c.name), ['provider', 'ask', 'modify', 'auto', 'help', 'Move message']);
+  assert.equal((body[5] as any).type, 3, 'Move message is a message context menu');
   const provider = body[0] as any;
   const set = provider.options.find((o: any) => o.name === 'set');
   assert.equal(set.options[0].choices.length, 12, 'all 12 providers selectable');
@@ -100,4 +101,27 @@ test('result embeds and link rows stay inside Discord limits', async () => {
   const rows = linkRows(links);
   assert.equal(rows.length, 5);
   rows.forEach((r) => json(r));
+});
+
+test('"Move message" right-click shows valid move/copy channel pickers', async () => {
+  const { moveContextMenu } = await import('../commands/move');
+  const m = fakeInteraction({
+    client: { user: { id: 'bot' } },
+    targetMessage: {
+      id: '333333333333333333',
+      channelId: '222222222222222222',
+      system: false,
+      content: 'hello there',
+      embeds: [],
+      components: [],
+      author: { id: 'user', username: 'alice' },
+    },
+  });
+  await moveContextMenu(m.interaction);
+  const payload = m.calls.reply[0];
+  const rows = payload.components.map((c: any) => json(c));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].components[0].custom_id, 'gs:move:m:222222222222222222:333333333333333333');
+  assert.equal(rows[1].components[0].custom_id, 'gs:move:c:222222222222222222:333333333333333333');
+  assert.ok(rows[0].components[0].channel_types.length >= 3);
 });

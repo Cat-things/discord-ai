@@ -4,7 +4,8 @@ GuildSmith is a Discord bot that **builds and manages your server for you**. You
 
 - **12 AI providers:** Gemini, Grok (xAI), Groq, OpenAI, Anthropic, OpenRouter, fal, Qwen, DeepSeek, Mistral, Z.AI, plus **local Ollama** (free, no API key).
 - **`/ask`** builds the server or adds on top of it. With no prompt it opens a **feature menu**.
-- **`/modify`** changes existing stuff, including things the bot built earlier ("undo the last build").
+- **`/modify`** changes existing stuff, including things the bot built earlier ("undo the last build", "move the ticket panel to #support").
+- **Messages:** the AI posts messages and announcements while building or modifying (link buttons, pings only if you ask). It can also **move, copy, edit or delete** messages, including its verification, ticket and role-menu panels. Or right-click any message → **Apps → Move message**.
 - **`/auto`** turns on auto mode, so destructive actions run without asking.
 - **`/provider`** picks the AI. API keys are entered in a private pop-up and stored **encrypted**.
 
@@ -39,6 +40,8 @@ GuildSmith is a Discord bot that **builds and manages your server for you**. You
 | 🎨 Self-roles menu | Button or dropdown role pickers |
 | ✅ Verification gate | Verify button, locked categories, and the role for existing members so nobody gets locked out |
 | 🎫 Ticket system | "Open ticket" button that makes private channels with staff and a close button |
+| 📣 Post an announcement / message | The AI writes and posts it, with optional link buttons and pings |
+| 📦 Move messages & panels | Move verification/ticket/role panels (their buttons keep working) or recent chat to another channel |
 | 📜 Rules & info | Read-only info channels with well-written embeds |
 
 You can also skip the menu and type anything: `/ask prompt: build me a cozy Minecraft server with a staff team and event channels`.
@@ -51,6 +54,7 @@ You can also skip the menu and type anything: `/ask prompt: build me a cozy Mine
 2. **Bot** tab:
    - Click **Reset Token** → **copy the token** (you need it for `.env`, never share it).
    - Under **Privileged Gateway Intents**, turn ON **SERVER MEMBERS INTENT** → **Save Changes**. Welcome messages and auto roles need it.
+   - Also turn ON **MESSAGE CONTENT INTENT** if you want the AI to move *other people's* messages (otherwise Discord hides their text from bots). Moving the bot's own panels, and the right-click **Move message** command, work without it.
 3. Invite it to your server. When the bot starts it prints an invite link in the console, or build it yourself:
    ```
    https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot+applications.commands&permissions=8
@@ -179,6 +183,7 @@ All commands are **admin-only** (Administrator permission). Server owners can ch
 | `/ask [prompt]` | Build or extend the server. No prompt opens the feature menu |
 | `/modify prompt:<text>` | Change or delete existing channels, roles, permissions, settings, or earlier bot builds |
 | `/auto enabled:<true/false>` | Auto mode: destructive actions run without the approval step |
+| Right-click a message → **Apps → Move message** | Move or copy that message (or panel) to another channel |
 | `/help` | Quick help and the current AI |
 
 ---
@@ -208,16 +213,19 @@ Each server configures its own provider and key. As the bot owner you can also p
 
 ## Safety: what needs approval
 
-- **Runs immediately:** creating roles (without staff permissions), categories, channels, messages, AutoMod rules, welcome/auto-role/ticket/verification/role-menu setups, bot invite links.
+- **Runs immediately:** creating roles (without staff permissions), categories, channels, AutoMod rules, welcome/auto-role/ticket/verification/role-menu setups, bot invite links, and posting messages that don't ping anyone.
 - **Needs your OK** (preview with *Run everything* / *Only safe steps* / *Cancel*) unless `/auto` is on:
   - deleting or editing existing channels, categories, roles or AutoMod rules,
   - changing permissions, server settings, Community mode or Onboarding,
   - mass role assignment,
+  - moving, editing or deleting existing messages,
+  - messages that ping `@everyone`, `@here` or a role,
   - creating roles with **dangerous permissions** (Administrator, Manage Server/Roles/Channels/Webhooks, Kick, Ban, Timeout, Mention Everyone).
 - **Always blocked, even in auto mode:**
   - handing out staff/admin roles automatically (auto role, role menus, verification, mass-assign to everyone),
   - an admin editing or deleting roles **at or above their own highest role**. This mirrors Discord's own rule, so the bot can't be used to get around the role hierarchy. The server owner is exempt.
-- Messages the AI writes never ping `@everyone`/`@here`/roles.
+- Messages the AI writes only ping when the plan asks for it and you approve it. Moved messages never re-ping anyone.
+- Moving a message reposts it and only deletes the original after the copy is posted. If a plan moves messages out of a channel and also deletes that channel, the delete always runs last.
 - API keys are typed into a private pop-up (never visible in chat), encrypted with AES-256-GCM in `data/db.json`, and shown masked (`sk-a…9xYz`).
 - Each build is saved to a short history, so `/modify prompt: undo the last build` knows exactly what was created.
 
@@ -250,15 +258,17 @@ What GuildSmith does instead:
 | Announcement/stage channels became text/voice | They need Community mode. Ask for Community first (menu → 🌐) |
 | Onboarding fails | Discord needs Community mode and 7+ default channels, 5+ of which everyone can chat in. The bot tops up the list automatically, but very small servers may need more channels |
 | Welcome/tickets/role buttons stopped working | They need the bot online. Check `journalctl -u guildsmith -f` |
+| "That message came back empty" when moving | Turn on **MESSAGE CONTENT INTENT** (Developer Portal → Bot), or use right-click → Apps → Move message, which works without it |
+| Moved messages show an "APP" tag | Discord can't move messages, so other people's messages are reposted through a webhook with their name and avatar. Discord labels webhook messages |
 
 ### Project layout
 ```
 src/
   index.ts            bot startup, command registration, events
   interactions.ts     routes slash commands, buttons, menus, modals
-  commands/           /provider, /ask (+ menu, bots), /modify, /auto, /help
+  commands/           /provider, /ask (+ menu, bots), /modify, /auto, /help, Move message
   ai/                 providers, HTTP clients, planner prompt, JSON repair, Ollama queue
-  discord/            server snapshot, action schemas, executor, safety rules, live features
+  discord/            server snapshot, action schemas, executor, safety rules, message moving, live features
   storage/            JSON database + API key encryption
   tests/              node:test suite (npm test), fully offline with fakes
 deploy/               systemd service + Debian installer
